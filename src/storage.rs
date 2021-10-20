@@ -21,13 +21,15 @@
 // limitations under the License.
 
 use std::cmp;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::eraftpb::*;
 
 use crate::errors::{Error, Result, StorageError};
 use crate::util::limit_size;
 
+use bytes::Bytes;
 use getset::{Getters, Setters};
 
 /// Holds both the hard state (commit index, vote leader, term) and the configuration state
@@ -108,6 +110,7 @@ pub trait Storage {
 /// The Memory Storage Core instance holds the actual state of the storage struct. To access this
 /// value, use the `rl` and `wl` functions on the main MemStorage implementation.
 pub struct MemStorageCore {
+    kv_clone:Arc<Mutex<HashMap<String,String>>>,
     raft_state: RaftState,
     // entries[i] has raft log position i+snapshot.get_metadata().index
     entries: Vec<Entry>,
@@ -121,6 +124,7 @@ pub struct MemStorageCore {
 impl Default for MemStorageCore {
     fn default() -> MemStorageCore {
         MemStorageCore {
+            kv_clone:Arc::new(Mutex::new(HashMap::new())),
             raft_state: Default::default(),
             entries: vec![],
             // Every time a snapshot is applied to the storage, the metadata will be stored here.
@@ -210,6 +214,10 @@ impl MemStorageCore {
 
         // Update conf states.
         self.raft_state.conf_state = meta.take_conf_state();
+        // CHANGE
+        let data=snapshot.take_data();
+        let new_kv:HashMap<String,String>=serde_json::from_slice(&data).unwrap();
+        *self.kv_clone.lock().unwrap()=new_kv;
         Ok(())
     }
 
@@ -234,8 +242,13 @@ impl MemStorageCore {
                 );
             }
         };
-
         meta.set_conf_state(self.raft_state.conf_state.clone());
+
+        // CHANGE
+        let kv=&*self.kv_clone.lock().unwrap();
+        let data=serde_json::to_vec(kv).unwrap();
+        snapshot.set_data(Bytes::from(data));
+        
         snapshot
     }
 
